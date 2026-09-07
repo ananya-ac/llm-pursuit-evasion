@@ -1,4 +1,4 @@
-from simulation import Simulation
+from simulation.testbed import Simulation
 
 
 if __name__ == "__main__":

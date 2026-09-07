@@ -1,12 +1,17 @@
-"""One-off generator for small placeholder images used by the vision-augmented
-planner (Experiment II). No real drone/bird photography exists in this repo,
-so these are simple PIL-drawn silhouettes: mechanical quadcopter shapes for
-drones, organic winged shapes for birds -- distinct enough in silhouette for
-a vision model to tell apart, without depending on any external asset source.
+"""One-off generator for the antagonistic-drone and bird placeholder images
+used by the vision-augmented planner (Experiment II): simple PIL-drawn
+silhouettes (mechanical quadcopter for the drone, organic winged shape for
+the bird), since no real photography of either exists in this repo.
+
+assets/civilian/ (civilian drone decoys) is deliberately NOT generated here
+-- it's populated with real sourced photos instead, since the whole point of
+that decoy is a genuine visual distinction from the antagonistic drone (both
+being drones) that a synthetic placeholder can't meaningfully provide.
 
 Run once (`python3 assets/generate_placeholder_assets.py`) to (re)populate
-assets/drones/ and assets/birds/; the files it writes are checked in, so this
-does not need to run again unless the asset set is intentionally changed.
+assets/drones/ and assets/birds/; the files it writes are checked in, so
+this does not need to run again unless the asset set is intentionally
+changed.
 """
 
 import math
@@ -18,6 +23,7 @@ SIZE = 128
 OUT_DIR = os.path.dirname(os.path.abspath(__file__))
 DRONE_DIR = os.path.join(OUT_DIR, "drones")
 BIRD_DIR = os.path.join(OUT_DIR, "birds")
+CIVILIAN_DIR = os.path.join(OUT_DIR, "civilian")
 
 
 def _new_canvas():
@@ -98,22 +104,23 @@ def draw_bird(seed):
 def main():
     os.makedirs(DRONE_DIR, exist_ok=True)
     os.makedirs(BIRD_DIR, exist_ok=True)
+    os.makedirs(CIVILIAN_DIR, exist_ok=True)
 
-    blue_colors = [(30, 90, 200), (20, 70, 170), (50, 110, 220)]
     red_colors = [(200, 40, 40), (170, 25, 25), (220, 60, 60)]
 
-    for i, color in enumerate(blue_colors, start=1):
-        draw_drone(body_color=color, rotor_color=(40, 40, 40), seed=i).save(
-            os.path.join(DRONE_DIR, f"blue_{i}.png")
-        )
     for i, color in enumerate(red_colors, start=1):
         draw_drone(body_color=color, rotor_color=(40, 40, 40), seed=i + 10).save(
             os.path.join(DRONE_DIR, f"red_{i}.png")
         )
     for i in range(1, 4):
         draw_bird(seed=i).save(os.path.join(BIRD_DIR, f"bird_{i}.png"))
+    # No placeholder generation for assets/civilian/ -- sourced from real
+    # civilian drone images instead (dropped in directly as civilian_*.png/
+    # .jpg/.jpeg; see simulation.py's _glob_images), since the whole point of
+    # the civilian-drone decoy is a genuine visual distinction real photos
+    # provide better than a synthetic placeholder ever could.
 
-    print(f"Wrote {len(blue_colors)} blue drone, {len(red_colors)} red drone, and 3 bird images.")
+    print(f"Wrote {len(red_colors)} red drone and 3 bird images.")
 
 
 if __name__ == "__main__":
