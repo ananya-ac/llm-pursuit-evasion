@@ -127,48 +127,45 @@ class NeutralizeController(BaseBlueRoleController):
 
 class ReconController(BaseBlueRoleController):
     """RECON controller: patrols toward a random waypoint inside the arena,
-    while independently sweeping its bearing back and forth across a
-    2*pi/3-radian arc centered on its current direction of travel -- like a
-    scout that keeps looking around while walking a patrol route, rather
-    than committing its sensor to a single fixed heading. Translation and
+    while independently pointing its bearing at that same target -- the
+    sensor stays aimed at the point the agent is scouting rather than
+    wherever the current thrust happens to be headed. Translation and
     heading are controlled independently (see BaseBlueRoleController), so
-    the sweep is a real rotation, not just "which way am I walking."
+    this is a real rotation, not just "which way am I walking."
 
     Waypoints are sampled uniformly within [0, arena_size]^2, so the patrol
     never needs to be clipped to stay in bounds -- a new one is drawn once
     the agent gets within waypoint_reach_radius of the current one. The
-    sweep target is theta_center +- pi/3 (a total range of 2*pi/3 radians),
-    oscillating sinusoidally over sweep_period seconds, where theta_center
-    is the current bearing-to-waypoint (recomputed each solve).
+    bearing target is the current bearing-to-waypoint, recomputed each
+    solve; once the agent reaches the waypoint and holds position there, the
+    bearing holds on it too.
 
     plan(..., directed_target=...) overrides the random-patrol waypoint with
     a role planner's chosen point (e.g. a stale coverage region's center --
     see coverage.CoverageTracker / RuleBasedBlueRolePlanner) and holds there once
     reached instead of resampling, so an assigned scout actually covers the
-    intended region rather than wandering the whole arena.
+    intended region rather than wandering the whole arena -- bearing follows
+    along, so the agent keeps facing the assigned region once it arrives.
 
-    Patrol waypoint and sweep phase are tracked per-agent (keyed by
-    agent_id), since a single ReconController instance is shared by every
-    blue currently assigned RECON -- without per-agent state, multiple
-    simultaneous RECON agents would patrol in lockstep. Falls back to a
-    plain hold-position-toward-waypoint (no sweep) when heading isn't part
-    of the state at all.
+    Patrol waypoint is tracked per-agent (keyed by agent_id), since a single
+    ReconController instance is shared by every blue currently assigned
+    RECON -- without per-agent state, multiple simultaneous RECON agents
+    would patrol in lockstep. Falls back to a plain hold-position-toward-
+    waypoint (no bearing term) when heading isn't part of the state at all.
 
     No blue-blue avoidance term here, same as every other role -- collision
     safety is handled uniformly downstream by the one-step CBF filter.
     """
 
     def __init__(self, horizon, dt, a_max, v_max, arena_size=100.0,
-                 waypoint_reach_radius=5.0, sweep_period=10.0,
-                 w_hold=1.0, w_sweep=1.0, w_u=0.5,
+                 waypoint_reach_radius=5.0,
+                 w_hold=1.0, w_point=1.0, w_u=0.5,
                  include_heading=False, omega_max=2.0 * np.pi, w_omega=0.1):
         self.arena_size = float(arena_size)
         self.waypoint_reach_radius = float(waypoint_reach_radius)
-        self.sweep_period = float(sweep_period)
         self.w_hold = float(w_hold)
-        self.w_sweep = float(w_sweep)
+        self.w_point = float(w_point)
         self.patrol_targets = {}  # agent_id -> np.array([x, y])
-        self.elapsed_times = {}   # agent_id -> seconds this agent has been sweeping
         super().__init__(
             horizon=horizon, dt=dt, a_max=a_max, v_max=v_max, w_u=w_u,
             include_heading=include_heading, omega_max=omega_max, w_omega=w_omega,
@@ -177,7 +174,7 @@ class ReconController(BaseBlueRoleController):
     def _declare_extra_params(self):
         self.target_param = self.opti.parameter(2)
         if self.include_heading:
-            self.theta_target_param = self.opti.parameter(self.N)
+            self.theta_target_param = self.opti.parameter(1)
 
     def _build_role_cost(self):
         J = 0
@@ -185,7 +182,7 @@ class ReconController(BaseBlueRoleController):
             J += self.w_hold * ca.sumsqr(self.X[0:2, k] - self.target_param)
         if self.include_heading:
             for k in range(1, self.N + 1):
-                J += self.w_sweep * ca.sumsqr(self.X[4, k] - self.theta_target_param[k - 1])
+                J += self.w_point * ca.sumsqr(self.X[4, k] - self.theta_target_param)
         return J
 
     def _random_waypoint(self):
@@ -206,11 +203,9 @@ class ReconController(BaseBlueRoleController):
             # wandering off it; this call happens every solve, so a new
             # planning-cycle assignment naturally overrides the old one.
             self.patrol_targets[key] = np.asarray(directed_target, dtype=float).reshape(2)
-            self.elapsed_times.setdefault(key, 0.0)
         else:
             if key not in self.patrol_targets:
                 self.patrol_targets[key] = self._random_waypoint()
-                self.elapsed_times[key] = 0.0
             if np.linalg.norm(own_pos - self.patrol_targets[key]) < self.waypoint_reach_radius:
                 self.patrol_targets[key] = self._random_waypoint()
 
@@ -219,17 +214,10 @@ class ReconController(BaseBlueRoleController):
 
         if self.include_heading:
             direction = target - own_pos
-            theta_center = (
+            theta_target = (
                 float(np.arctan2(direction[1], direction[0]))
                 if np.linalg.norm(direction) > 1e-6
                 else float(own_state[4])
             )
-            t0 = self.elapsed_times[key]
-            theta_targets = np.array([
-                theta_center
-                + (np.pi / 3.0) * np.sin(2.0 * np.pi * (t0 + k * self.dt) / self.sweep_period)
-                for k in range(1, self.N + 1)
-            ])
-            self.opti.set_value(self.theta_target_param, theta_targets)
-            self.elapsed_times[key] = t0 + self.dt
+            self.opti.set_value(self.theta_target_param, theta_target)
 
