@@ -1,15 +1,10 @@
-"""Shared discrete-time CBF-QP safety-filter machinery, independent of which
-planning strategy (joint-minimax NLP or decentralized per-agent MPC) produced
-the nominal control it filters. Works directly off ground-truth state.
+"""Shared discrete-time CBF-QP safety-filter machinery for the decentralized
+per-agent MPC planning strategy. Works directly off ground-truth state.
 
-Split out of solver.py's BaseMinimaxSolver: this mixin holds only the
-CBF-QP filter (blue-blue, blue-red, convex-hull containment, and the red
-one-step filter), plus the handful of shared, planning-strategy-agnostic
-helpers (`step_blue_dynamics`, `set_fixed_adjacency_from_state`,
-`reset_warm_starts`). The joint-minimax NLP boilerplate that used to live in
-the same base class (abstract cost/solver-builder hooks, best-response
-iteration) now lives in control/joint_minimax.py's JointMinimaxBase, which
-inherits from this mixin instead of duplicating it.
+This mixin holds the CBF-QP filter (blue-blue, blue-red, convex-hull
+containment, and the red one-step filter), plus a handful of shared helpers
+(`step_blue_dynamics`, `set_fixed_adjacency_from_state`, `reset_warm_starts`),
+inherited by DecentralizedPursuitEvasionSolver (simulation/decentralized_solver.py).
 """
 
 import casadi as ca
@@ -27,7 +22,6 @@ class CBFFilterMixin:
         blue_agent,
         red_agent,
         horizon,
-        capture_radius,
         v_max=None,
         a_max=None,
         enable_blue_blue_cbf=True,
@@ -66,7 +60,6 @@ class CBFFilterMixin:
 
         self.v_max = float(blue_agent.v_max if v_max is None else v_max)
         self.a_max = float(blue_agent.a_max if a_max is None else a_max)
-        self.r_cap = float(capture_radius)
         self.enable_blue_blue_cbf = bool(enable_blue_blue_cbf)
         self.enable_blue_red_cbf = bool(enable_blue_red_cbf)
         self.enable_convex_hull_containment = bool(enable_convex_hull_containment)

@@ -1,6 +1,5 @@
-"""Blue-team decentralized MPC role controllers: DEFEND, NEUTRALIZE/CAPTURE
-(NeutralizeController serves both -- see roles.BlueRole docstring), and RECON.
-Each implements BaseBlueRoleController's three hooks; dynamics, box
+"""Blue-team decentralized MPC role controllers: DEFEND, NEUTRALIZE, and
+RECON. Each implements BaseBlueRoleController's three hooks; dynamics, box
 constraints, and the shared plan() are inherited unchanged.
 """
 
@@ -90,8 +89,8 @@ class DefendController(BaseBlueRoleController):
 class NeutralizeController(BaseBlueRoleController):
     """Intercepts the red using a constant-velocity position prediction.
 
-    Adapted from the blue-side terms of PursuitEvasionMinimaxSolver's shared
-    cost (solver.py). The velocity-cutoff term is dropped: without a jointly
+    Adapted from the blue-side terms of the earlier joint-minimax solver's
+    shared cost. The velocity-cutoff term is dropped: without a jointly
     optimized red trajectory, it was matching velocity toward a stale linear
     extrapolation more aggressively than the position term itself pulled
     toward the red's actual predicted position.

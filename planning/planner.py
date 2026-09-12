@@ -57,7 +57,6 @@ class PlannerObservation:
     num_reds: int
     sim_step: int
     arena_size: float
-    capture_radius: float
     defense_center: Optional[np.ndarray] = None
     disabled_blues: Optional[List[int]] = None
     detected_red_indices: Optional[List[int]] = None
@@ -77,13 +76,12 @@ class BlueRolePlanner(ABC):
 
 
 class RuleBasedBlueRolePlanner(BlueRolePlanner):
-    """Stub planner: the blues closest to their nearest red are assigned an
-    intercept role, split between CAPTURE (closer-in, safe engagement -- CBF
-    collision avoidance keeps it outside contact range) and NEUTRALIZE
-    (further down the ranking, allowed to make contact); the rest DEFEND,
-    except that up to recon_fraction of the DEFEND-ranked agents are
-    redirected to RECON, targeting the stalest cells of obs.coverage_regions
-    (see coverage.CoverageTracker) -- a non-LLM baseline for the same
+    """Stub planner: the blues closest to their nearest red are assigned
+    NEUTRALIZE (an intercept role that closes to physical contact), down to
+    neutralize_fraction of the active blues; the rest DEFEND, except that up
+    to recon_fraction of the DEFEND-ranked agents are redirected to RECON,
+    targeting the stalest cells of obs.coverage_regions (see
+    coverage.CoverageTracker) -- a non-LLM baseline for the same
     staleness-driven scouting an LLM planner could reason about from the
     same field. recon_fraction defaults to 0.0 (RECON never offered), so
     existing callers are unaffected unless they opt in.
@@ -95,13 +93,11 @@ class RuleBasedBlueRolePlanner(BlueRolePlanner):
         self,
         neutralize_fraction: float = 0.5,
         min_neutralizers: int = 1,
-        capture_fraction: float = 0.5,
         recon_fraction: float = 0.0,
         min_recon: int = 0,
     ):
         self.neutralize_fraction = float(neutralize_fraction)
         self.min_neutralizers = int(min_neutralizers)
-        self.capture_fraction = float(capture_fraction)
         self.recon_fraction = float(recon_fraction)
         self.min_recon = int(min_recon)
         self.last_target_red_ids: Dict[int, int] = {}
@@ -168,16 +164,12 @@ class RuleBasedBlueRolePlanner(BlueRolePlanner):
             self.min_neutralizers,
             int(np.ceil(len(active_blues) * self.neutralize_fraction)),
         )
-        n_capture = int(round(n_intercept * self.capture_fraction))
 
         roles: Dict[int, BlueRole] = {}
         targets: Dict[int, int] = {}
         defend_candidates: List[int] = []
         for rank, idx in enumerate(order):
-            if rank < n_capture:
-                roles[idx] = BlueRole.CAPTURE
-                targets[idx] = nearest[idx][0]
-            elif rank < n_intercept:
+            if rank < n_intercept:
                 roles[idx] = BlueRole.NEUTRALIZE
                 targets[idx] = nearest[idx][0]
             else:
@@ -319,7 +311,6 @@ def _format_observation(obs: PlannerObservation, perspective: str) -> str:
     lines = [
         f"sim_step: {obs.sim_step}",
         f"arena_size: {obs.arena_size}",
-        f"capture_radius: {obs.capture_radius}",
     ]
     if obs.defense_center is not None:
         center = np.asarray(obs.defense_center, dtype=float).reshape(2)
@@ -449,8 +440,8 @@ def _call_structured_assignment(
             "type": "integer",
             "description": (
                 "Red agent id (must be one of the ids listed under red_agents) this "
-                "agent should engage -- required (>= 0) when role is neutralize or "
-                "capture; use -1 for defend/recon."
+                "agent should engage -- required (>= 0) when role is neutralize; "
+                "use -1 for defend/recon."
             ),
         }
         required.append("target_red_id")
@@ -459,8 +450,8 @@ def _call_structured_assignment(
             "type": "integer",
             "description": (
                 "Contact id (must be one of the ids listed under contacts) this "
-                "agent should engage -- required (>= 0) when role is neutralize or "
-                "capture; use -1 for defend/recon."
+                "agent should engage -- required (>= 0) when role is neutralize; "
+                "use -1 for defend/recon."
             ),
         }
         required.append("target_contact_id")
@@ -470,7 +461,7 @@ def _call_structured_assignment(
             "description": (
                 "Coverage region id (must be one of the ids listed under coverage) this "
                 "agent should patrol toward -- required (>= 0) when role is recon; use "
-                "-1 for defend/neutralize/capture."
+                "-1 for defend/neutralize."
             ),
         }
         required.append("target_region_id")
@@ -533,7 +524,7 @@ def _call_structured_assignment(
 
 class _BlueRoleAssignmentItem(BaseModel):
     agent_id: int
-    role: Literal["defend", "neutralize", "capture", "recon"]
+    role: Literal["defend", "neutralize", "recon"]
     target_red_id: int
     target_region_id: int
     reasoning: str
@@ -554,30 +545,26 @@ class _RedRoleAssignmentResponse(BaseModel):
 
 
 class LLMRolePlanner(BlueRolePlanner):
-    """LLM-backed blue role planner (DEFEND / NEUTRALIZE / CAPTURE), called
+    """LLM-backed blue role planner (DEFEND / NEUTRALIZE / RECON), called
     via OpenRouter. Drop-in replacement for RuleBasedBlueRolePlanner behind the
     same BlueRolePlanner interface -- see Simulation(role_planner=...).
     """
 
-    _VALID_ROLES = ["defend", "neutralize", "capture", "recon"]
+    _VALID_ROLES = ["defend", "neutralize", "recon"]
 
     def __init__(
         self,
         model: str = _DEFAULT_MODEL,
         api_key: Optional[str] = None,
         client: Optional[OpenAI] = None,
-        capture_points_capture: float = 2.0,
-        capture_points_neutralize: float = 1.0,
-        capture_threshold: int = 2,
+        neutralize_points: float = 1.0,
     ):
         self.model = model
         self.client = client if client is not None else _build_openrouter_client(api_key)
-        # Keep these in sync with the matching Simulation(...) kwargs -- the
-        # prompt states the real scoring the sim will actually apply, so a
-        # mismatch here would just recreate the incentive gap this exists to fix.
-        self.capture_points_capture = float(capture_points_capture)
-        self.capture_points_neutralize = float(capture_points_neutralize)
-        self.capture_threshold = int(capture_threshold)
+        # Keep in sync with the matching Simulation(...) kwarg -- the prompt
+        # states the real scoring the sim will actually apply, so a mismatch
+        # here would just recreate the incentive gap this exists to fix.
+        self.neutralize_points = float(neutralize_points)
         self.last_reasoning: Dict[int, str] = {}
         self.last_target_red_ids: Dict[int, int] = {}
         self.last_recon_target_regions: Dict[int, int] = {}
@@ -591,17 +578,16 @@ class LLMRolePlanner(BlueRolePlanner):
         return f"""You are the tactical commander for the BLUE team defending a region against RED intruders in a 2D pursuit-evasion simulation. Each planning cycle, you assign every active blue agent exactly one role:
 
 - DEFEND: hold a guard station on the perimeter of the defended region.
-- NEUTRALIZE: a single blue closes to physical contact with a red agent. No collision-avoidance safety margin is applied against red for this role -- contact is allowed and intended. Resolves fast, with just one agent. Consequence: that blue is permanently disabled afterward (it takes no further part in the engagement) and the kill is worth only {self.capture_points_neutralize} points.
-- CAPTURE: {self.capture_threshold} or more blues converge on the same red agent simultaneously and hold within capture_radius while maintaining a collision-avoidance safety margin -- red is captured by proximity without any contact. Slower and costlier up front ({self.capture_threshold} committed agents instead of 1), but every participating blue remains fully operational afterward, and the kill is worth {self.capture_points_capture} points -- more than NEUTRALIZE.
+- NEUTRALIZE: a single blue closes to physical contact with a red agent. No collision-avoidance safety margin is applied against red for this role -- contact is allowed and intended. Consequence: that blue is permanently disabled afterward (it takes no further part in the engagement) and the kill is worth {self.neutralize_points} points.
 - RECON: actively patrols toward a coverage region you choose (see the coverage list below) instead of holding a perimeter station or engaging -- it walks there while sweeping its sensor back and forth, then holds and keeps sweeping once it arrives. Use it to re-establish eyes on ground your team hasn't swept recently, not as a way to park an agent idle.
 
-This is a real tradeoff, not a preference: NEUTRALIZE trades a permanently lost asset and lower points for speed and certainty with a single agent. CAPTURE preserves your whole force and scores higher, but ties up {self.capture_threshold} agents at once and only resolves once they arrive together, so a fast or already-close red may breach or escape before CAPTURE converges. RECON commits an agent away from engagement or perimeter duty in exchange for reducing the chance an undetected red is sitting in a region you haven't looked at recently. Weigh this against how many active (non-disabled) blues you have left, how many red agents are still active, and how urgent this particular red is (close to breaching vs. far away). Disabled blues are listed in the observation and are unavailable -- do not assign them a role.
+Weigh NEUTRALIZE against RECON based on how many active (non-disabled) blues you have left, how many red agents are still active, and how urgent this particular red is (close to breaching vs. far away) versus how stale your coverage of the arena is. Disabled blues are listed in the observation and are unavailable -- do not assign them a role.
 
 Your team does not have full battlefield awareness: the red_agents list below only includes reds detected by your team's combined field of view (each blue senses a conic region ahead of its current heading) -- there may be additional reds beyond what's listed that your team simply cannot currently see. A short or empty red_agents list does not mean the defended region is safe, only that nothing is currently detected. The coverage list shows, for a fixed grid of regions spanning the arena, how many steps it's been since any blue's sensor last swept each one (-1 means never swept) -- higher numbers mean a red could have been sitting there undetected for longer, and are the main signal for where to send RECON.
 
-For every agent you assign NEUTRALIZE or CAPTURE, you must also set target_red_id to the id of the specific red agent (from the red_agents list above) it should engage -- you decide which threat each agent goes after, not just what role it plays. target_red_id must be one of the ids currently listed under red_agents (you can only target a red your team has actually detected); for DEFEND and RECON, set target_red_id to -1. When assigning CAPTURE, coordinate: multiple agents assigned CAPTURE against the same target_red_id converge on that one red together, since capture requires several blues on the same red at once.
+For every agent you assign NEUTRALIZE, you must also set target_red_id to the id of the specific red agent (from the red_agents list above) it should engage -- you decide which threat each agent goes after, not just what role it plays. target_red_id must be one of the ids currently listed under red_agents (you can only target a red your team has actually detected); for DEFEND and RECON, set target_red_id to -1.
 
-For every agent you assign RECON, you must also set target_region_id to the id of the specific coverage region (from the coverage list above) it should patrol toward -- prefer regions with a high (or -1, i.e. never-swept) steps_since_seen value. target_region_id must be one of the ids currently listed under coverage; for DEFEND, NEUTRALIZE, and CAPTURE, set target_region_id to -1. If multiple agents are assigned RECON, prefer spreading them across different regions rather than sending them all to the same one.
+For every agent you assign RECON, you must also set target_region_id to the id of the specific coverage region (from the coverage list above) it should patrol toward -- prefer regions with a high (or -1, i.e. never-swept) steps_since_seen value. target_region_id must be one of the ids currently listed under coverage; for DEFEND and NEUTRALIZE, set target_region_id to -1. If multiple agents are assigned RECON, prefer spreading them across different regions rather than sending them all to the same one.
 
 Assign roles based on the full tactical picture: how many red agents you can currently see, how close each is to blues and to the defended region, and how many blues you can commit to intercepting without leaving the perimeter undefended or over-spending your force. You do not need to use every role every cycle. Every active blue agent id provided must receive exactly one role, and for each one you must give a one-sentence reasoning explaining specifically why that agent got that role and target (referencing the actual tactical picture -- distances, force levels, urgency, coverage staleness -- not a generic restatement of the role's definition).
 
@@ -657,7 +643,7 @@ Respond only with a valid JSON object matching the required schema."""
         reasoning: Dict[int, str] = {}
         for item in parsed.assignments:
             role = BlueRole(item.role)
-            if role in (BlueRole.NEUTRALIZE, BlueRole.CAPTURE):
+            if role == BlueRole.NEUTRALIZE:
                 if item.target_red_id not in detected_reds:
                     # The LLM occasionally targets a red that has since dropped
                     # out of FOV (e.g. it was detected a cycle or two ago) --
@@ -713,7 +699,7 @@ Respond only with a valid JSON object matching the required schema."""
                 recon_targets[item.agent_id] = item.target_region_id
             roles[item.agent_id] = role
             reasoning[item.agent_id] = item.reasoning
-            target_str = item.target_red_id if role in (BlueRole.NEUTRALIZE, BlueRole.CAPTURE) else "n/a"
+            target_str = item.target_red_id if role == BlueRole.NEUTRALIZE else "n/a"
             region_str = item.target_region_id if role == BlueRole.RECON else "n/a"
             print(
                 f"[LLM blue] agent {item.agent_id} -> {item.role} "
@@ -732,7 +718,7 @@ class LLMRedRolePlanner(RedRolePlanner):
     RedRolePlanner interface -- see Simulation(red_role_planner=...).
     """
 
-    _SYSTEM_PROMPT = """You are the tactical commander for the RED team attempting to breach a defended region in a 2D pursuit-evasion simulation, while avoiding capture by BLUE agents. Each planning cycle, you assign every red agent exactly one role:
+    _SYSTEM_PROMPT = """You are the tactical commander for the RED team attempting to breach a defended region in a 2D pursuit-evasion simulation, while avoiding neutralization by BLUE agents. Each planning cycle, you assign every red agent exactly one role:
 
 - ATTACK: advance toward the defended region, attempting to breach it.
 - EVADE: flee from nearby threatening blue agents instead of advancing.
@@ -815,7 +801,6 @@ def _format_vision_text(obs: PlannerObservation) -> str:
     lines = [
         f"sim_step: {obs.sim_step}",
         f"arena_size: {obs.arena_size}",
-        f"capture_radius: {obs.capture_radius}",
     ]
     if obs.defense_center is not None:
         center = np.asarray(obs.defense_center, dtype=float).reshape(2)
@@ -853,7 +838,7 @@ def _format_vision_text(obs: PlannerObservation) -> str:
 
 class _BlueVisionAssignmentItem(BaseModel):
     agent_id: int
-    role: Literal["defend", "neutralize", "capture", "recon"]
+    role: Literal["defend", "neutralize", "recon"]
     target_contact_id: int
     target_region_id: int
     reasoning: str
@@ -874,23 +859,19 @@ class LLMVisionRolePlanner(BlueRolePlanner):
     filtered by Simulation down to only currently-detected contacts.
     """
 
-    _VALID_ROLES = ["defend", "neutralize", "capture", "recon"]
+    _VALID_ROLES = ["defend", "neutralize", "recon"]
 
     def __init__(
         self,
         model: str = _DEFAULT_VISION_MODEL,
         api_key: Optional[str] = None,
         client: Optional[OpenAI] = None,
-        capture_points_capture: float = 2.0,
-        capture_points_neutralize: float = 1.0,
-        capture_threshold: int = 2,
+        neutralize_points: float = 1.0,
         image_detail: str = "low",
     ):
         self.model = model
         self.client = client if client is not None else _build_openrouter_client(api_key)
-        self.capture_points_capture = float(capture_points_capture)
-        self.capture_points_neutralize = float(capture_points_neutralize)
-        self.capture_threshold = int(capture_threshold)
+        self.neutralize_points = float(neutralize_points)
         self.image_detail = image_detail
         self.last_reasoning: Dict[int, str] = {}
         self.last_targets: Dict[int, int] = {}
@@ -901,19 +882,18 @@ class LLMVisionRolePlanner(BlueRolePlanner):
         return f"""You are the tactical commander for the BLUE team defending a region against intrusions in a 2D pursuit-evasion simulation. Each planning cycle, you assign every active blue agent exactly one role:
 
 - DEFEND: hold a guard station on the perimeter of the defended region.
-- NEUTRALIZE: a single blue closes to physical contact with its assigned target contact. No collision-avoidance safety margin is applied against that contact for this role -- contact is allowed and intended. Resolves fast, with just one agent. Consequence: that blue is permanently disabled afterward (it takes no further part in the engagement) and the kill is worth only {self.capture_points_neutralize} points.
-- CAPTURE: {self.capture_threshold} or more blues converge on the same target contact simultaneously and hold within capture_radius while maintaining a collision-avoidance safety margin -- captured by proximity without any contact. Slower and costlier up front ({self.capture_threshold} committed agents instead of 1), but every participating blue remains fully operational afterward, and the kill is worth {self.capture_points_capture} points -- more than NEUTRALIZE.
+- NEUTRALIZE: a single blue closes to physical contact with its assigned target contact. No collision-avoidance safety margin is applied against that contact for this role -- contact is allowed and intended. Consequence: that blue is permanently disabled afterward (it takes no further part in the engagement) and the kill is worth {self.neutralize_points} points.
 - RECON: actively patrols toward a coverage region you choose (see the coverage list below) instead of holding a perimeter station or engaging -- it walks there while sweeping its sensor back and forth, then holds and keeps sweeping once it arrives. Use it to re-establish eyes on ground your team hasn't swept recently, not as a way to park an agent idle.
 
-This is a real tradeoff, not a preference: NEUTRALIZE trades a permanently lost asset and lower points for speed and certainty with a single agent. CAPTURE preserves your whole force and scores higher, but ties up {self.capture_threshold} agents at once and only resolves once they arrive together, so a fast or already-close threat may breach or escape before CAPTURE converges. RECON commits an agent away from engagement or perimeter duty in exchange for reducing the chance an undetected threat is sitting in a region you haven't looked at recently. Weigh this against how many active (non-disabled) blues you have left and how urgent a given contact is. Disabled blues are listed in the observation and are unavailable -- do not assign them a role.
+Weigh NEUTRALIZE against RECON based on how many active (non-disabled) blues you have left and how urgent a given contact is, versus how stale your coverage of the arena is. Disabled blues are listed in the observation and are unavailable -- do not assign them a role.
 
-Critically: every object under "contacts" is UNIDENTIFIED. Most are real antagonistic drones -- genuine threats, the only kind that count toward your win condition. Some are harmless birds, and some are harmless civilian drones -- neither is a threat, neither is part of the win condition, and engaging one wastes that agent's role for the cycle while real threats go unaddressed. Position and velocity alone will often not tell the three apart -- a bird or a civilian drone can be moving just as fast, in just as plausible a direction, as a real antagonistic drone. Each contact has an image attached below the text observation; use it to judge. A bird is usually easy to rule out from its organic winged silhouette. A civilian drone is the hard case: it is a quadcopter too, and can look very similar to the antagonistic drone at a glance -- look closely at each image for anything that actually distinguishes them (color, markings, build, condition) rather than assuming shape alone settles it, and weigh how confident the image genuinely makes you against the tactical picture before committing NEUTRALIZE or CAPTURE.
+Critically: every object under "contacts" is UNIDENTIFIED. Most are real antagonistic drones -- genuine threats, the only kind that count toward your win condition. Some are harmless birds, and some are harmless civilian drones -- neither is a threat, neither is part of the win condition, and engaging one wastes that agent's role for the cycle while real threats go unaddressed. Position and velocity alone will often not tell the three apart -- a bird or a civilian drone can be moving just as fast, in just as plausible a direction, as a real antagonistic drone. Each contact has an image attached below the text observation; use it to judge. A bird is usually easy to rule out from its organic winged silhouette. A civilian drone is the hard case: it is a quadcopter too, and can look very similar to the antagonistic drone at a glance -- look closely at each image for anything that actually distinguishes them (color, markings, build, condition) rather than assuming shape alone settles it, and weigh how confident the image genuinely makes you against the tactical picture before committing NEUTRALIZE.
 
 Your team does not have full battlefield awareness: the contacts list below only includes contacts detected by your team's combined field of view (each blue senses a conic region ahead of its current heading) -- there may be additional contacts beyond what's listed that your team simply cannot currently see. A short or empty contacts list does not mean the defended region is safe, only that nothing is currently detected. The coverage list shows, for a fixed grid of regions spanning the arena, how many steps it's been since any blue's sensor last swept each one (-1 means never swept) -- higher numbers mean a threat could have been sitting there undetected for longer, and are the main signal for where to send RECON.
 
-For every agent you assign NEUTRALIZE or CAPTURE, you must also set target_contact_id to the id of the specific contact (from the contacts list above) it should engage -- you decide which threat each agent goes after, not just what role it plays. target_contact_id must be one of the ids currently listed under contacts (you can only target a contact your team has actually detected); for DEFEND and RECON, set target_contact_id to -1. When assigning CAPTURE, coordinate: multiple agents assigned CAPTURE against the same target_contact_id converge on that one contact together, since capture requires several blues on the same target at once.
+For every agent you assign NEUTRALIZE, you must also set target_contact_id to the id of the specific contact (from the contacts list above) it should engage -- you decide which threat each agent goes after, not just what role it plays. target_contact_id must be one of the ids currently listed under contacts (you can only target a contact your team has actually detected); for DEFEND and RECON, set target_contact_id to -1.
 
-For every agent you assign RECON, you must also set target_region_id to the id of the specific coverage region (from the coverage list above) it should patrol toward -- prefer regions with a high (or -1, i.e. never-swept) steps_since_seen value. target_region_id must be one of the ids currently listed under coverage; for DEFEND, NEUTRALIZE, and CAPTURE, set target_region_id to -1. If multiple agents are assigned RECON, prefer spreading them across different regions rather than sending them all to the same one.
+For every agent you assign RECON, you must also set target_region_id to the id of the specific coverage region (from the coverage list above) it should patrol toward -- prefer regions with a high (or -1, i.e. never-swept) steps_since_seen value. target_region_id must be one of the ids currently listed under coverage; for DEFEND and NEUTRALIZE, set target_region_id to -1. If multiple agents are assigned RECON, prefer spreading them across different regions rather than sending them all to the same one.
 
 Assign roles based on the full tactical picture: how many contacts you can currently see, how close each is to blues and to the defended region, and how many blues you can commit to intercepting without leaving the perimeter undefended or over-spending your force. You do not need to use every role every cycle. Every active blue agent id provided must receive exactly one role, and for each one you must give a one-sentence reasoning explaining specifically why that agent got that role and target (referencing what you actually see in its image and the tactical picture -- distances, force levels, urgency, coverage staleness -- not a generic restatement of the role's definition).
 
@@ -989,7 +969,7 @@ Respond only with a valid JSON object matching the required schema."""
         reasoning: Dict[int, str] = {}
         for item in parsed.assignments:
             role = BlueRole(item.role)
-            if role in (BlueRole.NEUTRALIZE, BlueRole.CAPTURE):
+            if role == BlueRole.NEUTRALIZE:
                 if item.target_contact_id not in detected_contacts:
                     # Same schema-slip tolerance as LLMRolePlanner's
                     # target_red_id validation -- the model occasionally
@@ -1040,7 +1020,7 @@ Respond only with a valid JSON object matching the required schema."""
                 recon_targets[item.agent_id] = item.target_region_id
             roles[item.agent_id] = role
             reasoning[item.agent_id] = item.reasoning
-            target_str = item.target_contact_id if role in (BlueRole.NEUTRALIZE, BlueRole.CAPTURE) else "n/a"
+            target_str = item.target_contact_id if role == BlueRole.NEUTRALIZE else "n/a"
             region_str = item.target_region_id if role == BlueRole.RECON else "n/a"
             print(
                 f"[LLM blue-vision] agent {item.agent_id} -> {item.role} "
@@ -1064,11 +1044,9 @@ class RuleBasedVisionRolePlanner(BlueRolePlanner):
     """
 
     def __init__(self, neutralize_fraction: float = 0.5, min_neutralizers: int = 1,
-                 capture_fraction: float = 0.5, recon_fraction: float = 0.0,
-                 min_recon: int = 0):
+                 recon_fraction: float = 0.0, min_recon: int = 0):
         self.neutralize_fraction = float(neutralize_fraction)
         self.min_neutralizers = int(min_neutralizers)
-        self.capture_fraction = float(capture_fraction)
         self.recon_fraction = float(recon_fraction)
         self.min_recon = int(min_recon)
         self.last_reasoning: Dict[int, str] = {}
@@ -1121,16 +1099,13 @@ class RuleBasedVisionRolePlanner(BlueRolePlanner):
 
         order = sorted(active_blues, key=lambda i: distances[i])
         n_intercept = max(self.min_neutralizers, int(np.ceil(len(active_blues) * self.neutralize_fraction)))
-        n_capture = int(round(n_intercept * self.capture_fraction))
 
         roles: Dict[int, BlueRole] = {}
         targets: Dict[int, int] = {}
         reasoning: Dict[int, str] = {}
         defend_candidates: List[int] = []
         for rank, idx in enumerate(order):
-            if rank < n_capture:
-                roles[idx] = BlueRole.CAPTURE
-            elif rank < n_intercept:
+            if rank < n_intercept:
                 roles[idx] = BlueRole.NEUTRALIZE
             else:
                 roles[idx] = BlueRole.DEFEND

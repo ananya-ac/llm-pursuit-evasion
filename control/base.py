@@ -1,10 +1,9 @@
 """Base classes for per-agent decentralized MPC role controllers, one per
-team. Each builds its small single-agent QP once at construction (mirroring
-control.joint_minimax's pattern) and re-solves it every timestep via
-set_value/opti.solve() -- the CasADi graph is never rebuilt per call. Blue-
-blue/blue-red safety coordination is handled downstream by control.cbf's
-CBF-QP filter, not here; these controllers only produce each agent's nominal
-(unfiltered) plan.
+team. Each builds its small single-agent QP once at construction and
+re-solves it every timestep via set_value/opti.solve() -- the CasADi graph
+is never rebuilt per call. Blue-blue/blue-red safety coordination is
+handled downstream by control.cbf's CBF-QP filter, not here; these
+controllers only produce each agent's nominal (unfiltered) plan.
 """
 
 import casadi as ca

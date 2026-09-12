@@ -24,12 +24,10 @@ def determine_outcome(simulation):
         return "solver_failure"
     if simulation.collided:
         return "lost_collision"
-    if simulation.captured:
-        return "won_capture"
-    if simulation.escaped:
-        return "lost_escape"
     if simulation.touchdown:
         return "lost_touchdown"
+    if simulation.defenders_won:
+        return "blue_win_all_resolved"
     return "incomplete"
 
 
@@ -45,7 +43,6 @@ def parse_velocity_list(raw_value):
 def run_single_game(
     game_idx,
     base_seed,
-    config,
     blue_v_max,
     red_v_max,
     verbose_games,
@@ -53,13 +50,13 @@ def run_single_game(
 ):
     seed = base_seed + game_idx
     simulation = Simulation(
-        config=config,
-        solver_mode="pursuit_evasion",
         seed=seed,
         blue_v_max=float(blue_v_max),
         blue_a_max=1.0,
         red_v_max=float(red_v_max),
         red_a_max=1.0,
+        enable_blue_blue_cbf=True,
+        enable_blue_red_cbf=True,
     )
 
     if verbose_games:
@@ -74,17 +71,17 @@ def run_single_game(
     row = {
         "game_idx": game_idx,
         "seed": seed,
-        "config": config,
         "blue_v_max": blue_v_max,
         "blue_a_max": 1.0,
         "red_v_max": red_v_max,
         "red_a_max": 1.0,
         "outcome": outcome,
         "steps_completed": steps_completed,
-        "captured": int(simulation.captured),
-        "capture_step": simulation.capture_step,
-        "escaped": int(simulation.escaped),
-        "escape_step": simulation.escape_step,
+        "num_neutralized": simulation.num_neutralized,
+        "num_escaped": simulation.num_escaped,
+        "defenders_won": int(simulation.defenders_won),
+        "touchdown": int(simulation.touchdown),
+        "touchdown_step": simulation.touchdown_step,
         "collided": int(simulation.collided),
         "collision_step": simulation.collision_step,
         "collision_kind": simulation.collision_kind,
@@ -99,30 +96,30 @@ def run_single_game(
     return row
 
 
-def build_default_paths(config, n_games):
-    stem = f"velocity_grid_config{config}_{n_games}games"
+def build_default_paths(n_games):
+    stem = f"velocity_grid_{n_games}games"
     return f"{stem}.csv", f"{stem}_solver_failures.csv", f"{stem}_heatmap.png"
 
 
-def build_default_gif_dir(config, n_games):
-    return os.path.join("gifs", f"velocity_grid_config{config}_{n_games}games")
+def build_default_gif_dir(n_games):
+    return os.path.join("gifs", f"velocity_grid_{n_games}games")
 
 
 def save_rows_csv(rows, output_csv):
     fieldnames = [
         "game_idx",
         "seed",
-        "config",
         "blue_v_max",
         "blue_a_max",
         "red_v_max",
         "red_a_max",
         "outcome",
         "steps_completed",
-        "captured",
-        "capture_step",
-        "escaped",
-        "escape_step",
+        "num_neutralized",
+        "num_escaped",
+        "defenders_won",
+        "touchdown",
+        "touchdown_step",
         "collided",
         "collision_step",
         "collision_kind",
@@ -138,18 +135,18 @@ def save_rows_csv(rows, output_csv):
         writer.writerows(rows)
 
 
-def build_capture_matrix(rows, blue_velocities, red_velocities):
+def build_win_matrix(rows, blue_velocities, red_velocities):
     matrix = np.zeros((len(blue_velocities), len(red_velocities)), dtype=int)
     for i, p_vel in enumerate(blue_velocities):
         for j, e_vel in enumerate(red_velocities):
-            captures = sum(
+            wins = sum(
                 1
                 for row in rows
                 if row["blue_v_max"] == p_vel
                 and row["red_v_max"] == e_vel
-                and row["outcome"] == "won_capture"
+                and row["outcome"] == "blue_win_all_resolved"
             )
-            matrix[i, j] = captures
+            matrix[i, j] = wins
     return matrix
 
 
@@ -178,7 +175,7 @@ def save_heatmap(matrix, blue_velocities, red_velocities, n_games, output_png):
             )
 
     colorbar = fig.colorbar(image, ax=ax)
-    colorbar.set_label("Number of Victories (Capture)", fontsize=COLORBAR_FONTSIZE)
+    colorbar.set_label("Number of Victories", fontsize=COLORBAR_FONTSIZE)
     colorbar.ax.tick_params(labelsize=TICK_FONTSIZE)
     fig.tight_layout()
     fig.savefig(output_png, dpi=200)
@@ -187,10 +184,9 @@ def save_heatmap(matrix, blue_velocities, red_velocities, n_games, output_png):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run a pursuit-evasion velocity grid sweep and save a capture heatmap."
+        description="Run a decentralized pursuit-evasion velocity grid sweep and save a win-rate heatmap."
     )
     parser.add_argument("--n-games", type=int, default=100, help="Games per velocity pair.")
-    parser.add_argument("--config", type=int, default=2, help="Simulation config to use.")
     parser.add_argument(
         "--blue-velocities",
         type=str,
@@ -221,7 +217,7 @@ def main():
         "--gif-dir",
         type=str,
         default=None,
-        help="Directory to store representative GIFs. Default: gifs/velocity_grid_configX_Ygames",
+        help="Directory to store representative GIFs. Default: gifs/velocity_grid_Ygames",
     )
     parser.add_argument(
         "--verbose-games",
@@ -233,14 +229,14 @@ def main():
     blue_velocities = parse_velocity_list(args.blue_velocities)
     red_velocities = parse_velocity_list(args.red_velocities)
     default_csv, default_solver_failures_csv, default_heatmap = build_default_paths(
-        args.config, args.n_games
+        args.n_games
     )
     output_csv = args.output_csv or default_csv
     output_solver_failures_csv = (
         args.output_solver_failures_csv or default_solver_failures_csv
     )
     output_heatmap = args.output_heatmap or default_heatmap
-    gif_dir = args.gif_dir or build_default_gif_dir(args.config, args.n_games)
+    gif_dir = args.gif_dir or build_default_gif_dir(args.n_games)
     if args.take_gifs:
         os.makedirs(gif_dir, exist_ok=True)
 
@@ -264,7 +260,6 @@ def main():
                 result = run_single_game(
                     game_idx=game_idx,
                     base_seed=args.seed + seed_offset,
-                    config=args.config,
                     blue_v_max=p_vel,
                     red_v_max=e_vel,
                     verbose_games=args.verbose_games,
@@ -315,7 +310,7 @@ def main():
     save_rows_csv(rows, output_csv)
     solver_failure_rows = [row for row in rows if row["outcome"] == "solver_failure"]
     save_rows_csv(solver_failure_rows, output_solver_failures_csv)
-    matrix = build_capture_matrix(rows, blue_velocities, red_velocities)
+    matrix = build_win_matrix(rows, blue_velocities, red_velocities)
     save_heatmap(
         matrix=matrix,
         blue_velocities=blue_velocities,
@@ -324,7 +319,7 @@ def main():
         output_png=output_heatmap,
     )
 
-    print(f"Completed velocity sweep for config {args.config}.")
+    print("Completed velocity sweep.")
     print(f"CSV results written to: {output_csv}")
     print(f"Solver-failure CSV written to: {output_solver_failures_csv}")
     print(f"Heatmap written to: {output_heatmap}")

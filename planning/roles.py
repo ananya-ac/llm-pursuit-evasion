@@ -4,11 +4,9 @@ from enum import Enum
 class BlueRole(Enum):
     """Tactical role assigned to a single blue by a BlueRolePlanner.
 
-    NEUTRALIZE and CAPTURE both run the same intercept controller; the
-    distinction is downstream, in the blue-red CBF filter: NEUTRALIZE is
-    exempt from blue-red collision avoidance (allowed to make contact),
-    CAPTURE is not (converges within capture_radius but stays outside
-    D_safe_blue_red).
+    NEUTRALIZE (controllers via dispatch.NeutralizeController) is exempt
+    from blue-red collision avoidance in the CBF filter, allowing it to
+    make physical contact with its target red.
 
     RECON (controllers.ReconController) patrols toward a waypoint -- either
     uniformly random, or a specific coverage region chosen by the role
@@ -19,7 +17,6 @@ class BlueRole(Enum):
 
     DEFEND = "defend"
     NEUTRALIZE = "neutralize"
-    CAPTURE = "capture"
     RECON = "recon"
 
 

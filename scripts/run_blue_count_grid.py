@@ -25,12 +25,10 @@ def determine_outcome(simulation):
         return "solver_failure"
     if simulation.collided:
         return "lost_collision"
-    if simulation.captured:
-        return "won_capture"
-    if simulation.escaped:
-        return "lost_escape"
     if simulation.touchdown:
         return "lost_touchdown"
+    if simulation.defenders_won:
+        return "blue_win_all_resolved"
     return "incomplete"
 
 
@@ -55,7 +53,6 @@ def parse_velocity_list(raw_value):
 def run_single_game(
     game_idx,
     base_seed,
-    config,
     num_blues,
     red_v_max,
     verbose_games,
@@ -63,14 +60,14 @@ def run_single_game(
 ):
     seed = base_seed + game_idx
     simulation = Simulation(
-        config=config,
-        solver_mode="pursuit_evasion",
         seed=seed,
         num_blues=int(num_blues),
         blue_v_max=2.0,
         blue_a_max=1.0,
         red_v_max=float(red_v_max),
         red_a_max=1.0,
+        enable_blue_blue_cbf=True,
+        enable_blue_red_cbf=True,
     )
 
     if verbose_games:
@@ -85,7 +82,6 @@ def run_single_game(
     row = {
         "game_idx": game_idx,
         "seed": seed,
-        "config": config,
         "num_blues": num_blues,
         "blue_v_max": 2.0,
         "blue_a_max": 1.0,
@@ -93,10 +89,11 @@ def run_single_game(
         "red_a_max": 1.0,
         "outcome": outcome,
         "steps_completed": steps_completed,
-        "captured": int(simulation.captured),
-        "capture_step": simulation.capture_step,
-        "escaped": int(simulation.escaped),
-        "escape_step": simulation.escape_step,
+        "num_neutralized": simulation.num_neutralized,
+        "num_escaped": simulation.num_escaped,
+        "defenders_won": int(simulation.defenders_won),
+        "touchdown": int(simulation.touchdown),
+        "touchdown_step": simulation.touchdown_step,
         "collided": int(simulation.collided),
         "collision_step": simulation.collision_step,
         "collision_kind": simulation.collision_kind,
@@ -111,24 +108,23 @@ def run_single_game(
     return row
 
 
-def build_default_paths(config, n_games):
-    stem = f"blue_count_grid_config{config}_{n_games}games"
+def build_default_paths(n_games):
+    stem = f"blue_count_grid_{n_games}games"
     return (
         f"{stem}.csv",
-        f"{stem}_capture_count_heatmap.png",
-        f"{stem}_capture_rate_heatmap.png",
+        f"{stem}_win_count_heatmap.png",
+        f"{stem}_win_rate_heatmap.png",
     )
 
 
-def build_default_gif_dir(config, n_games):
-    return os.path.join("gifs", f"blue_count_grid_config{config}_{n_games}games")
+def build_default_gif_dir(n_games):
+    return os.path.join("gifs", f"blue_count_grid_{n_games}games")
 
 
 def save_rows_csv(rows, output_csv):
     fieldnames = [
         "game_idx",
         "seed",
-        "config",
         "num_blues",
         "blue_v_max",
         "blue_a_max",
@@ -136,10 +132,11 @@ def save_rows_csv(rows, output_csv):
         "red_a_max",
         "outcome",
         "steps_completed",
-        "captured",
-        "capture_step",
-        "escaped",
-        "escape_step",
+        "num_neutralized",
+        "num_escaped",
+        "defenders_won",
+        "touchdown",
+        "touchdown_step",
         "collided",
         "collision_step",
         "collision_kind",
@@ -155,23 +152,23 @@ def save_rows_csv(rows, output_csv):
         writer.writerows(rows)
 
 
-def build_capture_metrics(rows, blue_counts, red_velocities, n_games):
-    capture_counts = np.zeros((len(blue_counts), len(red_velocities)), dtype=int)
-    capture_rates = np.zeros((len(blue_counts), len(red_velocities)), dtype=float)
+def build_win_metrics(rows, blue_counts, red_velocities, n_games):
+    win_counts = np.zeros((len(blue_counts), len(red_velocities)), dtype=int)
+    win_rates = np.zeros((len(blue_counts), len(red_velocities)), dtype=float)
 
     for i, count in enumerate(blue_counts):
         for j, e_vel in enumerate(red_velocities):
-            captures = sum(
+            wins = sum(
                 1
                 for row in rows
                 if row["num_blues"] == count
                 and row["red_v_max"] == e_vel
-                and row["outcome"] == "won_capture"
+                and row["outcome"] == "blue_win_all_resolved"
             )
-            capture_counts[i, j] = captures
-            capture_rates[i, j] = captures / float(n_games)
+            win_counts[i, j] = wins
+            win_rates[i, j] = wins / float(n_games)
 
-    return capture_counts, capture_rates
+    return win_counts, win_rates
 
 
 def save_heatmap(matrix, blue_counts, red_velocities, title, colorbar_label, fmt, output_png):
@@ -209,15 +206,9 @@ def save_heatmap(matrix, blue_counts, red_velocities, title, colorbar_label, fmt
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run a pursuit-evasion sweep over number of blues and save capture heatmaps."
+        description="Run a decentralized pursuit-evasion sweep over number of blues and save win-rate heatmaps."
     )
     parser.add_argument("--n-games", type=int, default=3, help="Games per blue count.")
-    parser.add_argument(
-        "--config",
-        type=int,
-        default=3,
-        help="Simulation config to use. Default is 3 because config 2 only supports 4 blues.",
-    )
     parser.add_argument(
         "--blue-counts",
         type=str,
@@ -236,13 +227,13 @@ def main():
         "--output-count-heatmap",
         type=str,
         default=None,
-        help="Capture-count heatmap output path.",
+        help="Win-count heatmap output path.",
     )
     parser.add_argument(
         "--output-rate-heatmap",
         type=str,
         default=None,
-        help="Capture-rate heatmap output path.",
+        help="Win-rate heatmap output path.",
     )
     parser.add_argument(
         "--take-gifs",
@@ -253,7 +244,7 @@ def main():
         "--gif-dir",
         type=str,
         default=None,
-        help="Directory to store GIFs. Default: gifs/blue_count_grid_configX_Ygames",
+        help="Directory to store GIFs. Default: gifs/blue_count_grid_Ygames",
     )
     parser.add_argument(
         "--verbose-games",
@@ -265,12 +256,12 @@ def main():
     blue_counts = parse_count_list(args.blue_counts)
     red_velocities = parse_velocity_list(args.red_velocities)
     default_csv, default_count_heatmap, default_rate_heatmap = build_default_paths(
-        args.config, args.n_games
+        args.n_games
     )
     output_csv = args.output_csv or default_csv
     output_count_heatmap = args.output_count_heatmap or default_count_heatmap
     output_rate_heatmap = args.output_rate_heatmap or default_rate_heatmap
-    gif_dir = args.gif_dir or build_default_gif_dir(args.config, args.n_games)
+    gif_dir = args.gif_dir or build_default_gif_dir(args.n_games)
     if args.take_gifs:
         os.makedirs(gif_dir, exist_ok=True)
 
@@ -287,7 +278,6 @@ def main():
                 result = run_single_game(
                     game_idx=game_idx,
                     base_seed=args.seed + seed_offset,
-                    config=args.config,
                     num_blues=count,
                     red_v_max=e_vel,
                     verbose_games=args.verbose_games,
@@ -321,32 +311,32 @@ def main():
             seed_offset += args.n_games
 
     save_rows_csv(rows, output_csv)
-    capture_counts, capture_rates = build_capture_metrics(
+    win_counts, win_rates = build_win_metrics(
         rows, blue_counts, red_velocities, args.n_games
     )
     save_heatmap(
-        capture_counts,
+        win_counts,
         blue_counts,
         red_velocities,
-        title=f"Capture Count by Blue Count and Red Velocity ({args.n_games} Games Each)",
-        colorbar_label="Number of Victories (Capture)",
+        title=f"Win Count by Blue Count and Red Velocity ({args.n_games} Games Each)",
+        colorbar_label="Number of Victories",
         fmt="d",
         output_png=output_count_heatmap,
     )
     save_heatmap(
-        capture_rates,
+        win_rates,
         blue_counts,
         red_velocities,
-        title=f"Capture Rate by Blue Count and Red Velocity ({args.n_games} Games Each)",
-        colorbar_label="Capture Rate",
+        title=f"Win Rate by Blue Count and Red Velocity ({args.n_games} Games Each)",
+        colorbar_label="Win Rate",
         fmt=".2f",
         output_png=output_rate_heatmap,
     )
 
-    print(f"Completed blue-count sweep for config {args.config}.")
+    print("Completed blue-count sweep.")
     print(f"CSV results written to: {output_csv}")
-    print(f"Capture-count heatmap written to: {output_count_heatmap}")
-    print(f"Capture-rate heatmap written to: {output_rate_heatmap}")
+    print(f"Win-count heatmap written to: {output_count_heatmap}")
+    print(f"Win-rate heatmap written to: {output_rate_heatmap}")
     if args.take_gifs:
         print(f"Representative GIFs written to: {gif_dir}")
         if saved_solver_failure_gif:

@@ -31,7 +31,6 @@ PLANNING_INTERVAL_SECONDS = 1.0
 def run_simulation():
     role_planner = RuleBasedBlueRolePlanner(
         neutralize_fraction=0.4,
-        capture_fraction=0.5,
         recon_fraction=0.4,
         min_recon=1,
     )

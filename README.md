@@ -4,9 +4,9 @@ A multi-agent pursuit-evasion / perimeter-defense simulation testbed where a
 "blue" defender swarm is coordinated by either rule-based logic or an
 LLM-backed role planner (via OpenRouter), against a "red" attacker team that
 tries to breach a defended perimeter or escape the arena. Low-level motion is
-solved with CasADi/OSQP (minimax MPC or a decentralized per-agent solver);
-role assignment (RECON / NEUTRALIZE / CAPTURE, etc.) is decided by the
-pluggable planner layer on top.
+solved with CasADi/OSQP via a decentralized per-agent MPC solver; role
+assignment (RECON / NEUTRALIZE, etc.) is decided by the pluggable planner
+layer on top.
 
 Two experiments are supported:
 
@@ -19,8 +19,8 @@ Two experiments are supported:
 ## Repository layout
 
 - `agents/` — agent dynamics (`Agent`, state/dynamics integration).
-- `control/` — low-level controllers and solvers (minimax MPC, decentralized
-  per-agent solver, CBF safety filters).
+- `control/` — low-level controllers and solvers (decentralized per-agent MPC,
+  CBF safety filters).
 - `perception/` — field-of-view/detection geometry (`sensing.py`) and
   coverage tracking for RECON (`coverage.py`).
 - `planning/` — role planners: `RuleBasedBlueRolePlanner`/`LLMRolePlanner` (blue)
@@ -164,7 +164,7 @@ python3 -m scripts.run_blue_count_grid --n-games 3 --output-csv blue_count.csv -
 python3 -m scripts.run_velocity_grid --n-games 100 --output-csv velocity.csv --output-heatmap velocity.png
 ```
 
-Both use the rule-based/minimax solver (no LLM, no API key) and produce a
+Both use the rule-based decentralized solver (no LLM, no API key) and produce a
 heatmap image plus a per-game CSV.
 
 ## Reproduce: render a game as GIFs after the fact

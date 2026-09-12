@@ -66,7 +66,7 @@ def main():
         "error_message": "",
         "outcome": determine_outcome(sim),
         "steps_completed": max(len(sim.history_red) - 1, 0),
-        "num_captured": sim.num_captured,
+        "num_neutralized": sim.num_neutralized,
         "num_escaped": sim.num_escaped,
         "num_red_active_at_end": sim.red_outcomes.count("active"),
         "red_outcomes": ",".join(sim.red_outcomes),

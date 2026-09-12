@@ -14,13 +14,9 @@ from control.blue_controllers import DefendController, NeutralizeController, Rec
 from control.red_controllers import AttackController, EvadeController, RedReconController
 from planning.roles import RedRole, BlueRole
 
-# NEUTRALIZE and CAPTURE both run the same intercept controller -- the
-# distinction between them is downstream, in the blue-red CBF filter (see
-# roles.BlueRole's docstring), not in which controller plans their motion.
 BLUE_ROLE_CONTROLLER_CLASSES = {
     BlueRole.DEFEND: DefendController,
     BlueRole.NEUTRALIZE: NeutralizeController,
-    BlueRole.CAPTURE: NeutralizeController,
     BlueRole.RECON: ReconController,
 }
 

@@ -37,7 +37,6 @@ class DecentralizedPursuitEvasionSolver(CBFFilterMixin):
         blue_agent,
         red_agent,
         horizon,
-        capture_radius,
         arena_size=100.0,
         defense_center=None,
         defense_polygon=None,
@@ -52,7 +51,6 @@ class DecentralizedPursuitEvasionSolver(CBFFilterMixin):
             blue_agent=blue_agent,
             red_agent=red_agent,
             horizon=horizon,
-            capture_radius=capture_radius,
             enable_blue_blue_cbf=enable_blue_blue_cbf,
             enable_blue_red_cbf=enable_blue_red_cbf,
             enable_convex_hull_containment=enable_convex_hull_containment,
@@ -165,18 +163,16 @@ class DecentralizedPursuitEvasionSolver(CBFFilterMixin):
         X_e_plans), or all-None on any sub-solve failure (matching
         solve_minimax's failure-signaling convention).
 
-        NEUTRALIZE and CAPTURE both run the same intercept controller -- the
-        only difference between them is downstream, in whether the blue-red
-        CBF filter (CBFFilterMixin.one_step_cbf_filter) exempts that blue
-        from collision avoidance (NEUTRALIZE is exempt and may make contact;
-        CAPTURE is not and stays outside D_safe_blue_red).
+        NEUTRALIZE blues are exempt from the blue-red CBF filter
+        (CBFFilterMixin.one_step_cbf_filter), allowing them to make contact
+        with their target.
 
-        `target_override`: optional {blue_idx: 4-vector state} for NEUTRALIZE/
-        CAPTURE agents, e.g. from a vision planner's explicit target_contact_id
+        `target_override`: optional {blue_idx: 4-vector state} for NEUTRALIZE
+        agents, e.g. from a vision planner's explicit target_contact_id
         (which may resolve to a red OR a decoy bird's state -- this method has
         no notion of "contact"/"bird", it just steers toward whatever state
         it's given). Falls back to the nearest-red heuristic for any
-        NEUTRALIZE/CAPTURE agent with no override entry (logged, since a
+        NEUTRALIZE agent with no override entry (logged, since a
         planner that's supposed to always supply one -- e.g. LLMVisionRolePlanner
         -- silently missing an entry usually signals a bug upstream). DEFEND
         always uses its own nearest-red heuristic regardless of overrides,
@@ -219,7 +215,7 @@ class DecentralizedPursuitEvasionSolver(CBFFilterMixin):
 
             role = role_assignment.get(i, BlueRole.DEFEND)
             controller = self._blue_role_controllers[role]
-            if role in (BlueRole.NEUTRALIZE, BlueRole.CAPTURE):
+            if role == BlueRole.NEUTRALIZE:
                 if i in target_override:
                     target_state = target_override[i]
                 else:
