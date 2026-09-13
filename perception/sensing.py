@@ -79,3 +79,22 @@ def team_detected_indices(observer_states, observer_bearings, target_states, hal
                 detected.add(target_idx)
                 break
     return detected
+
+
+def per_observer_detected_indices(observer_states, observer_bearings, target_states, half_angle_rad, max_range):
+    """Same inputs/semantics as team_detected_indices, but keyed by observer
+    instead of collapsed to a team-wide union -- {observer_idx: set(target_idx)}
+    detected by that specific observer's own sensor cone. Used where a
+    behavior must be driven by what one particular agent personally detected
+    (e.g. bearing-tracking), not by what the team as a whole has seen."""
+    detected_by_observer = {}
+    for observer_idx, observer_pos in observer_states:
+        observer_bearing = observer_bearings[observer_idx]
+        detected = {
+            target_idx
+            for target_idx, target_pos in target_states
+            if is_detected(observer_pos, observer_bearing, target_pos, half_angle_rad, max_range)
+        }
+        if detected:
+            detected_by_observer[observer_idx] = detected
+    return detected_by_observer

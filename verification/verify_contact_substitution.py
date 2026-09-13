@@ -125,11 +125,11 @@ def check_detection_gating():
     assert kind == "red"
 
     sim.red_state[idx * sim.red_nx : idx * sim.red_nx + 2] = inside_pos
-    _, _, detected_inside = sim._compute_detected_indices(sim_step=0)
+    _, _, detected_inside, _ = sim._compute_detected_indices(sim_step=0)
     assert contact_id in detected_inside, "contact dead ahead in range should be detected"
 
     sim.red_state[idx * sim.red_nx : idx * sim.red_nx + 2] = outside_pos
-    _, _, detected_outside = sim._compute_detected_indices(sim_step=0)
+    _, _, detected_outside, _ = sim._compute_detected_indices(sim_step=0)
     assert contact_id not in detected_outside, "contact directly behind should not be detected"
 
     print("PASS: detection gating correctly includes/excludes a contact based on FOV cone/range")

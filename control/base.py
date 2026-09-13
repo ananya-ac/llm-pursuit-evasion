@@ -16,14 +16,21 @@ class BaseBlueRoleController:
     include_heading=True appends a 5th state (bearing theta) and 3rd control
     (yaw rate omega), with theta_{k+1} = theta_k + dt*omega_k as a genuinely
     independent integrator -- it never enters, and is never driven by, the
-    position/velocity block above, which is unchanged either way. Subclasses
-    that don't give omega a role-specific cost (i.e. all of them, currently)
-    get it regularized toward 0 via w_omega, so heading simply holds at
-    whatever it was initialized to.
+    position/velocity block above, which is unchanged either way. Absent any
+    other pull on omega, it's regularized toward 0 via w_omega, so heading
+    simply holds at whatever it was initialized to.
+
+    Detection-driven bearing tracking (see plan()'s bearing_target arg) is
+    also handled here, shared by every role: whenever a blue's own sensor has
+    currently detected a red, its bearing turns to face it -- taking priority
+    over any role-specific heading behavior (e.g. ReconController's own
+    patrol-pointing, which gates itself off via bearing_active_param -- see
+    that class). w_bearing_track should be well above w_omega/any role's own
+    heading weight so this dominates whenever active.
     """
 
     def __init__(self, horizon, dt, a_max, v_max, w_u=0.5, include_heading=False,
-                 omega_max=2.0 * np.pi, w_omega=0.1):
+                 omega_max=2.0 * np.pi, w_omega=0.1, w_bearing_track=5.0):
         self.N = int(horizon)
         self.dt = float(dt)
         self.a_max = float(a_max)
@@ -32,6 +39,7 @@ class BaseBlueRoleController:
         self.include_heading = bool(include_heading)
         self.omega_max = float(omega_max)
         self.w_omega = float(w_omega)
+        self.w_bearing_track = float(w_bearing_track)
         self.nx = 5 if self.include_heading else 4
         self.nu = 3 if self.include_heading else 2
 
@@ -66,11 +74,23 @@ class BaseBlueRoleController:
             self.opti.subject_to(self.opti.bounded(-self.v_max, vx_next, self.v_max))
             self.opti.subject_to(self.opti.bounded(-self.v_max, vy_next, self.v_max))
 
+        if self.include_heading:
+            # Shared bearing-tracking machinery, available to every role
+            # (not just RECON's own patrol-pointing): bearing_active_param
+            # gates the term on/off per-solve (0.0 = no detection this step,
+            # term contributes nothing) so the QP graph never needs
+            # rebuilding -- see plan().
+            self.bearing_target_param = self.opti.parameter(1)
+            self.bearing_active_param = self.opti.parameter(1)
+
         self._declare_extra_params()
 
         J = self.w_u * sum(ca.sumsqr(self.U[0:2, k]) for k in range(self.N))
         if self.include_heading:
             J += self.w_omega * sum(ca.sumsqr(self.U[2, k]) for k in range(self.N))
+            J += self.w_bearing_track * self.bearing_active_param * sum(
+                ca.sumsqr(self.X[4, k] - self.bearing_target_param) for k in range(1, self.N + 1)
+            )
         J += self._build_role_cost()
         self.opti.minimize(J)
         self.opti.solver("osqp", {"verbose": False})
@@ -82,11 +102,11 @@ class BaseBlueRoleController:
         raise NotImplementedError
 
     def _set_extra_values(self, own_state, red_state, other_blue_states, agent_id=None,
-                           directed_target=None):
+                           directed_target=None, bearing_target=None):
         raise NotImplementedError
 
     def plan(self, own_state, red_state, other_blue_states=None, agent_id=None,
-             directed_target=None):
+             directed_target=None, bearing_target=None):
         """Returns (u0, X_plan, U_plan, solved_ok).
 
         agent_id: the calling blue's index. Most roles don't need it (the QP
@@ -105,6 +125,12 @@ class BaseBlueRoleController:
         chosen coverage region instead of a uniformly random one). Every
         other role ignores it -- accepted here so callers (solve_decentralized)
         don't need to special-case which controller they're calling.
+
+        bearing_target: optional 2-vector position (e.g. a detected red's
+        current position), handled uniformly here rather than per-role --
+        see class docstring. None means nothing was detected by this agent
+        this step, so the shared bearing-tracking cost term is gated off and
+        heading falls back to whatever the role itself does with omega.
         """
         own_state = np.asarray(own_state, dtype=float).reshape(self.nx)
         # red_state may be wider than 4 (e.g. also carries heading) -- only
@@ -112,9 +138,23 @@ class BaseBlueRoleController:
         red_state = np.asarray(red_state, dtype=float).flatten()
 
         self.opti.set_value(self.x0_param, own_state)
+        if self.include_heading:
+            if bearing_target is not None:
+                own_pos = own_state[0:2]
+                direction = np.asarray(bearing_target, dtype=float).reshape(2) - own_pos
+                theta_target = (
+                    float(np.arctan2(direction[1], direction[0]))
+                    if np.linalg.norm(direction) > 1e-6
+                    else float(own_state[4])
+                )
+                self.opti.set_value(self.bearing_target_param, theta_target)
+                self.opti.set_value(self.bearing_active_param, 1.0)
+            else:
+                self.opti.set_value(self.bearing_target_param, float(own_state[4]))
+                self.opti.set_value(self.bearing_active_param, 0.0)
         self._set_extra_values(
             own_state, red_state, other_blue_states, agent_id=agent_id,
-            directed_target=directed_target,
+            directed_target=directed_target, bearing_target=bearing_target,
         )
 
         try:

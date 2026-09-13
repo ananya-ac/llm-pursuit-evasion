@@ -77,8 +77,8 @@ class DefendController(BaseBlueRoleController):
         return best_point
 
     def _set_extra_values(self, own_state, red_state, other_blue_states, agent_id=None,
-                           directed_target=None):
-        del other_blue_states, agent_id, directed_target
+                           directed_target=None, bearing_target=None):
+        del other_blue_states, agent_id, directed_target, bearing_target
         if self.defense_polygon is not None and len(self.defense_polygon) >= 3:
             target = self._closest_point_on_polygon(red_state[0:2])
         else:
@@ -116,8 +116,8 @@ class NeutralizeController(BaseBlueRoleController):
         return J
 
     def _set_extra_values(self, own_state, red_state, other_blue_states, agent_id=None,
-                           directed_target=None):
-        del own_state, other_blue_states, agent_id, directed_target
+                           directed_target=None, bearing_target=None):
+        del own_state, other_blue_states, agent_id, directed_target, bearing_target
         p_e0, v_e = red_state[0:2], red_state[2:4]
         traj = np.zeros((2, self.N + 1))
         for k in range(self.N + 1):
@@ -146,6 +146,12 @@ class ReconController(BaseBlueRoleController):
     reached instead of resampling, so an assigned scout actually covers the
     intended region rather than wandering the whole arena -- bearing follows
     along, so the agent keeps facing the assigned region once it arrives.
+
+    This patrol-pointing cost gates itself off (via the shared
+    bearing_active_param from BaseBlueRoleController) whenever plan(...,
+    bearing_target=...) is set that step -- a detected red takes priority
+    over patrol sweeping, without the two heading costs fighting each other
+    in the same QP.
 
     Patrol waypoint is tracked per-agent (keyed by agent_id), since a single
     ReconController instance is shared by every blue currently assigned
@@ -182,15 +188,18 @@ class ReconController(BaseBlueRoleController):
             J += self.w_hold * ca.sumsqr(self.X[0:2, k] - self.target_param)
         if self.include_heading:
             for k in range(1, self.N + 1):
-                J += self.w_point * ca.sumsqr(self.X[4, k] - self.theta_target_param)
+                J += (
+                    self.w_point * (1.0 - self.bearing_active_param)
+                    * ca.sumsqr(self.X[4, k] - self.theta_target_param)
+                )
         return J
 
     def _random_waypoint(self):
         return np.random.uniform(0.0, self.arena_size, size=2)
 
     def _set_extra_values(self, own_state, red_state, other_blue_states, agent_id=None,
-                           directed_target=None):
-        del red_state, other_blue_states
+                           directed_target=None, bearing_target=None):
+        del red_state, other_blue_states, bearing_target
         own_pos = own_state[0:2]
         key = agent_id if agent_id is not None else 0
 

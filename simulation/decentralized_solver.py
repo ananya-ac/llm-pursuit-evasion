@@ -156,6 +156,7 @@ class DecentralizedPursuitEvasionSolver(CBFFilterMixin):
     def solve_decentralized(
         self, x_current, red_states, role_assignment, red_role_assignment=None,
         target_override=None, recon_target_override=None, detected_blue_indices=None,
+        bearing_target_override=None,
     ):
         """Dispatches each blue to its assigned role's controller, then
         dispatches each red to its assigned RedRole controller against the
@@ -185,10 +186,20 @@ class DecentralizedPursuitEvasionSolver(CBFFilterMixin):
         state -- ReconController has no nearest-red fallback, so a RECON
         agent with no entry here just keeps its existing random-patrol
         behavior.
+
+        `bearing_target_override`: optional {blue_idx: 2-vector position} --
+        a red currently detected by that specific blue's own sensor (see
+        Simulation._resolve_bearing_targets), passed straight through to
+        every role's controller.plan(bearing_target=...) regardless of role,
+        since bearing-tracking is handled uniformly in
+        BaseBlueRoleController, not per-role. A blue with no entry here
+        detected nothing this step and keeps its role's own default heading
+        behavior.
         """
         red_role_assignment = red_role_assignment or {}
         target_override = target_override or {}
         recon_target_override = recon_target_override or {}
+        bearing_target_override = bearing_target_override or {}
         blue_nx, blue_nu = self.blue_nx, self.blue.nu_single
         red_nx, red_nu = self.red_nx, self.red.nu_single
         x_current = np.asarray(x_current, dtype=float).reshape(blue_nx * self.N_p)
@@ -234,6 +245,7 @@ class DecentralizedPursuitEvasionSolver(CBFFilterMixin):
             u0, X_plan, _, ok = controller.plan(
                 own_state, target_state, other_states, agent_id=i,
                 directed_target=recon_target_override.get(i),
+                bearing_target=bearing_target_override.get(i),
             )
             if not ok:
                 return None, None, None, None

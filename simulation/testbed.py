@@ -71,6 +71,7 @@ class Simulation:
         convex_hull_slack_weight=1e7,
         contact_tolerance=4e-1,
         planning_interval_seconds=10.0,
+        bearing_hold_seconds=1.0,
         role_planner=None,
         neutralize_fraction=0.5,
         red_role_planner=None,
@@ -193,6 +194,8 @@ class Simulation:
         self.planning_interval_steps = max(
             1, round(self.planning_interval_seconds / self.dt)
         )
+        self.bearing_hold_seconds = float(bearing_hold_seconds)
+        self.bearing_hold_steps = max(0, round(self.bearing_hold_seconds / self.dt))
         self.role_planner = (
             role_planner
             if role_planner is not None
@@ -201,6 +204,9 @@ class Simulation:
             )
         )
         self.role_assignment = {}
+        self.blue_target_red_idx = {}
+        self.blue_last_detected_red_pos = {}
+        self.blue_steps_since_detected = {}
         self.red_role_planner = (
             red_role_planner
             if red_role_planner is not None
@@ -646,13 +652,13 @@ class Simulation:
 
     def _compute_detected_indices(self, sim_step):
         """Returns (detected_red_indices, detected_blue_indices,
-        detected_contact_indices): which opposing agents (and, for the
-        vision-augmented Experiment II contact roster, which contact_ids)
-        each team's combined field of view can see this cycle. Disabled
-        blues and non-active reds are excluded from being both observers
-        (their sensors are presumably down/gone) and detection targets
-        (already-resolved reds aren't real threats). Own-team visibility is
-        unaffected by this -- it's handled entirely in
+        detected_contact_indices, per_blue_detected_reds): which opposing
+        agents (and, for the vision-augmented Experiment II contact roster,
+        which contact_ids) each team's combined field of view can see this
+        cycle. Disabled blues and non-active reds are excluded from being
+        both observers (their sensors are presumably down/gone) and
+        detection targets (already-resolved reds aren't real threats).
+        Own-team visibility is unaffected by this -- it's handled entirely in
         planner._format_observation, not here.
 
         detected_contact_indices reuses the same blue_observers/blue_bearings
@@ -662,6 +668,12 @@ class Simulation:
         handful of contacts at most); it's simply unused/empty whenever
         contact_roster is red-only (Experiment I, or Experiment II with no
         detection filtering applied by the caller).
+
+        per_blue_detected_reds ({blue_idx: set(red_idx)}) is the per-observer
+        analogue of detected_red_indices' team-wide union -- which reds each
+        specific blue's own sensor cone currently sees, used to drive
+        bearing-tracking (a blue only turns to face a red it personally
+        detected, not one only some other blue on the team can see).
 
         Also updates self.coverage_tracker from the same blue observer/
         bearing data, since "is this cell within some blue's FOV" is the
@@ -676,6 +688,9 @@ class Simulation:
         blue_observers = [(i, self.x_current[i * self.blue_nx : i * self.blue_nx + 2]) for i in active_blues]
         red_targets = [(j, self.red_state[j * self.red_nx : j * self.red_nx + 2]) for j in active_reds]
         detected_red_indices = sensing.team_detected_indices(
+            blue_observers, blue_bearings, red_targets, self.fov_half_angle_rad, self.fov_range,
+        )
+        per_blue_detected_reds = sensing.per_observer_detected_indices(
             blue_observers, blue_bearings, red_targets, self.fov_half_angle_rad, self.fov_range,
         )
 
@@ -696,7 +711,60 @@ class Simulation:
             blue_observers, blue_bearings, contact_targets, self.fov_half_angle_rad, self.fov_range,
         )
 
-        return detected_red_indices, detected_blue_indices, detected_contact_indices
+        return detected_red_indices, detected_blue_indices, detected_contact_indices, per_blue_detected_reds
+
+    def _resolve_bearing_targets(self, per_blue_detected_reds):
+        """{blue_idx: 2-vector red position} for every blue that either
+        personally detected at least one red this step (see
+        _compute_detected_indices), or is still within its post-detection
+        grace period (see below). Tiebreak when a blue detects more than
+        one: its currently assigned NEUTRALIZE target (self.blue_target_red_idx,
+        refreshed each planning cycle in run()) if that red is among what it
+        personally detected, else the nearest of what it personally detected.
+
+        Grace period: once a blue's own sensor stops detecting anything, the
+        last detected red's position is held as its bearing target for up to
+        self.bearing_hold_steps more steps before falling back to the role's
+        default heading behavior. Without this, a single-step detection blip
+        (e.g. the blue's own independent translation -- RECON's patrol
+        motion keeps flying toward its waypoint regardless of what's
+        detected -- dragging it out of the FOV cone/range for just one step)
+        immediately and fully releases the tracking cost, snapping heading
+        back to the role's stale default target with no chance to
+        re-acquire. A blue past its grace period (or that's never detected
+        anything) has no entry -- its controller falls back to its own
+        role's default heading behavior (see BaseBlueRoleController)."""
+        bearing_targets = {}
+        for blue_idx in range(self.num_blues):
+            if self.blue_disabled[blue_idx]:
+                continue
+            detected = per_blue_detected_reds.get(blue_idx, set())
+            if detected:
+                assigned_red_idx = self.blue_target_red_idx.get(blue_idx)
+                if assigned_red_idx in detected:
+                    red_idx = assigned_red_idx
+                else:
+                    own_pos = self.x_current[blue_idx * self.blue_nx : blue_idx * self.blue_nx + 2]
+                    red_idx = min(
+                        detected,
+                        key=lambda j: np.linalg.norm(
+                            own_pos - self.red_state[j * self.red_nx : j * self.red_nx + 2]
+                        ),
+                    )
+                pos = self.red_state[red_idx * self.red_nx : red_idx * self.red_nx + 2].copy()
+                bearing_targets[blue_idx] = pos
+                self.blue_last_detected_red_pos[blue_idx] = pos
+                self.blue_steps_since_detected[blue_idx] = 0
+            elif (
+                blue_idx in self.blue_last_detected_red_pos
+                and self.blue_steps_since_detected.get(blue_idx, 0) < self.bearing_hold_steps
+            ):
+                bearing_targets[blue_idx] = self.blue_last_detected_red_pos[blue_idx]
+                self.blue_steps_since_detected[blue_idx] += 1
+            else:
+                self.blue_last_detected_red_pos.pop(blue_idx, None)
+                self.blue_steps_since_detected.pop(blue_idx, None)
+        return bearing_targets
 
     def _blue_blue_collision_status(self):
         """Blue-blue hard-contact check only. Blue-red contact is handled
@@ -794,6 +862,9 @@ class Simulation:
         self.history_civilians = [self.civilian_state.copy()]
         self.history_cbf_slack = []
         self.role_assignment = {}
+        self.blue_target_red_idx = {}
+        self.blue_last_detected_red_pos = {}
+        self.blue_steps_since_detected = {}
         self.red_role_assignment = {}
         self.role_assignment_history = [dict(self.role_assignment)]
         self.red_role_assignment_history = [dict(self.red_role_assignment)]
@@ -859,9 +930,14 @@ class Simulation:
             # mirroring how CBF safety filtering is also always
             # every-step/full-ground-truth, distinct from the slower
             # strategic replanning cadence.
-            detected_red_indices, detected_blue_indices, detected_contact_indices = (
+            detected_red_indices, detected_blue_indices, detected_contact_indices, per_blue_detected_reds = (
                 self._compute_detected_indices(step)
             )
+            # Every step, not gated by planning_interval_steps, same as
+            # detection itself -- a blue should turn to face a red the
+            # instant its own sensor detects it, not wait for the next
+            # planning cycle.
+            bearing_target_override = self._resolve_bearing_targets(per_blue_detected_reds)
             if step % self.planning_interval_steps == 0:
                 # Detection-gated: a contact (and its image) only enters
                 # the observation once some blue's FOV has actually
@@ -909,6 +985,23 @@ class Simulation:
                         self.target_override[blue_id] = self.red_state[
                             red_id * self.red_nx : red_id * self.red_nx + 4
                         ]
+                # {blue_id: red_idx} for bearing-tracking's tiebreak (see
+                # _resolve_bearing_targets) -- unifies Experiment I's raw red
+                # index space and Experiment II's contact_id space (resolved
+                # through contact_roster, keeping only contacts that are
+                # actually reds -- a targeted bird/civilian carries no
+                # bearing-tracking priority). Reassigned in full each
+                # planning cycle, same as role_assignment/target_override.
+                self.blue_target_red_idx = {}
+                for blue_id, red_id in target_red_ids.items():
+                    if red_id is not None and 0 <= red_id < self.num_reds and self.red_outcomes[red_id] == "active":
+                        self.blue_target_red_idx[blue_id] = red_id
+                for blue_id, contact_id in target_contact_ids.items():
+                    if contact_id is None or not (0 <= contact_id < len(self.contact_roster)):
+                        continue
+                    kind, idx = self.contact_roster[contact_id]
+                    if kind == "red" and self.red_outcomes[idx] == "active":
+                        self.blue_target_red_idx[blue_id] = idx
                 # RECON targeting: separate from target_override above
                 # (which feeds NEUTRALIZE's intercept controller with a
                 # 4-vector red/contact state) -- ReconController only ever
@@ -936,6 +1029,7 @@ class Simulation:
                 target_override=self.target_override,
                 recon_target_override=self.recon_target_override,
                 detected_blue_indices=detected_blue_indices,
+                bearing_target_override=bearing_target_override,
             )
             solve_failed = u_p_first is None
             x_p_next_nominal = None if solve_failed else X_p_plans[:, 1]
